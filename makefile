@@ -9,7 +9,7 @@ NUMPROCS = 8
 all:  parallel
 
 parallel:
-	$(CC) $(MPIFLAGS) $(CFLAGS) mat_vec.cu -o $(EXECNAME)
+	$(CC) $(MPIFLAGS) $(CFLAGS) src/mat_vec.cu -o $(EXECNAME)
 
 hpcCompile:
 	module load compiler/cuda/7.5/compilervars
