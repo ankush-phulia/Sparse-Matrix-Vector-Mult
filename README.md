@@ -19,4 +19,7 @@ B
 ...
 
 
-#### Move scripts into main directory, and after 'make', run them
+### Running
+Move scripts into main directory, and after 'make', run them
+
+Note : Scripts were meant for running on HPC@IITD
