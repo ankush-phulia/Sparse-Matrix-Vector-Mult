@@ -4,189 +4,182 @@
 
 int N;
 int comm_size, proc_Id;
-int dim, num_rows; //dim of data, number of rows the proc has
+int dim, num_rows;  // dim of data, number of rows the proc has
 
 vector<int> indices, ptrs;
-vector<int> data; //sparse matrix ka stuff
-vector<int> vec;  //vector
+vector<int> data;  // sparse matrix ka stuff
+vector<int> vec;   // vector
 long long int *own_output, *output;
 vector<int> own_mat_indices, own_mat_ptrs;
-vector<int> own_mat_data; //own_matrix stuff
+vector<int> own_mat_data;  // own_matrix stuff
 
 string out_file = "Output_";
 
-__device__ long long int multRow(int noOfElems, int *colIndices, int *nonZeroElems, int *vecTOR)
-{
+__device__ long long int multRow(int noOfElems, int *colIndices,
+                                 int *nonZeroElems, int *vecTOR) {
     long long int sum = 0;
-    for (int j = 0; j < noOfElems; j++)
-    {
-		long long int num1 = nonZeroElems[j];
-		long long int num2 = vecTOR[colIndices[j]];
-		sum += (num1) * (num2);
+    for (int j = 0; j < noOfElems; j++) {
+        long long int num1 = nonZeroElems[j];
+        long long int num2 = vecTOR[colIndices[j]];
+        sum += (num1) * (num2);
     }
     return sum;
 }
 
-__global__ void multKernel(int *firstElemsRows, int *colIndices, int *nonZeroElems, int numRows, int *vecTOR, long long int *output)
-{
+__global__ void multKernel(int *firstElemsRows, int *colIndices,
+                           int *nonZeroElems, int numRows, int *vecTOR,
+                           long long int *output) {
     int currRow = blockIdx.x * blockDim.x + threadIdx.x;
-    if (currRow < numRows)
-    {
-		int rowStart = firstElemsRows[currRow];
-		int rowEnd = firstElemsRows[currRow + 1];
-		output[currRow] = multRow(rowEnd - rowStart, colIndices + rowStart, nonZeroElems + rowStart, vecTOR);
+    if (currRow < numRows) {
+        int rowStart = firstElemsRows[currRow];
+        int rowEnd = firstElemsRows[currRow + 1];
+        output[currRow] = multRow(rowEnd - rowStart, colIndices + rowStart,
+                                  nonZeroElems + rowStart, vecTOR);
     }
 }
 
-void getInput(char *in_file)
-{
-    if (proc_Id == 0)
-    {
-		//get input in proc 0
-		ifstream f_in;
-		f_in.open(in_file);
-		//headers, dim and stuff
-		string junk, not_junk;
-		string temp;
-		int data_item;
-		int x, y;
-		f_in >> junk >> not_junk;
-		f_in >> junk >> dim >> not_junk;
-		f_in >> temp;
+void getInput(char *in_file) {
+    if (proc_Id == 0) {
+        // get input in proc 0
+        ifstream f_in;
+        f_in.open(in_file);
+        // headers, dim and stuff
+        string junk, not_junk;
+        string temp;
+        int data_item;
+        int x, y;
+        f_in >> junk >> not_junk;
+        f_in >> junk >> dim >> not_junk;
+        f_in >> temp;
 
-		int xold = -1;
-		while (temp[0] != 'B')
-		{
-			x = atoi(temp.c_str());
-			f_in >> y >> data_item;
-			data.push_back(data_item);
-			indices.push_back(y);
-			if (x != xold)
-			{
-			int diff = x - xold - 1;
-			while (diff--)
-			{
-				ptrs.push_back(indices.size() - 1);
-			}
+        int xold = -1;
+        while (temp[0] != 'B') {
+            x = atoi(temp.c_str());
+            f_in >> y >> data_item;
+            data.push_back(data_item);
+            indices.push_back(y);
+            if (x != xold) {
+                int diff = x - xold - 1;
+                while (diff--) {
+                    ptrs.push_back(indices.size() - 1);
+                }
 
-			ptrs.push_back(indices.size() - 1);
-			xold = x;
-			}
-			f_in >> temp;
-		}
-		int endIndex = ptrs.size();
-		int differ = dim - endIndex;
-		while (differ--)
-			ptrs.push_back(indices.size());
+                ptrs.push_back(indices.size() - 1);
+                xold = x;
+            }
+            f_in >> temp;
+        }
+        int endIndex = ptrs.size();
+        int differ = dim - endIndex;
+        while (differ--) ptrs.push_back(indices.size());
 
-		vec.resize(dim);
-		for (int i = 0; i < dim; i++)
-		{
-			f_in >> data_item;
-			vec[i] = data_item;
-		}
+        vec.resize(dim);
+        for (int i = 0; i < dim; i++) {
+            f_in >> data_item;
+            vec[i] = data_item;
+        }
 
-		f_in.close();
+        f_in.close();
 
-		//pick up left over rows for proc 0
-		num_rows += dim % comm_size;
+        // pick up left over rows for proc 0
+        num_rows += dim % comm_size;
     }
 
-    //tell everyone about their load
+    // tell everyone about their load
     MPI_Bcast(&dim, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-    //send the vector
+    // send the vector
     vec.resize(dim);
     MPI_Bcast(&vec[0], dim, MPI_INT, 0, MPI_COMM_WORLD);
 
     int chunk = dim / comm_size;
 
     num_rows += chunk;
-    //prepare the output vector
-    //send the matrix rows
+    // prepare the output vector
+    // send the matrix rows
 
-    if (proc_Id != 0)
-    {
-		own_mat_ptrs.resize(num_rows + 1);
-		MPI_Recv(&own_mat_ptrs[0], own_mat_ptrs.size(), MPI_INT, 0, proc_Id, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		own_mat_data.resize(own_mat_ptrs.back());
-		own_mat_indices.resize(own_mat_ptrs.back());
-		MPI_Recv(&own_mat_indices[0], own_mat_indices.size(), MPI_INT, 0, proc_Id, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		MPI_Recv(&own_mat_data[0], own_mat_data.size(), MPI_INT, 0, proc_Id, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    }
-    else
-    {
-		int next_index = num_rows;
-		int next = ptrs[next_index];
-		int temp, old_index;
-		vector<int> temp_ptr, temp_indices;
-		vector<int> temp_data;
-		//own stuff
-		own_mat_indices = sub(indices, 0, next);
-		own_mat_data = sub(data, 0, next);
-		own_mat_ptrs = sub(ptrs, 0, num_rows);
-		own_mat_ptrs.push_back(own_mat_indices.size());
-		//send load to others
-		for (int i = 1; i < comm_size - 1; i++)
-		{
-			old_index = next_index;
-			next_index += chunk;
-			temp = next;
-			next = ptrs[next_index];
-			temp_data = sub(data, temp, next);
-			temp_indices = sub(indices, temp, next);
-			temp_ptr = sub(ptrs, old_index, next_index);
-			mapped_subtract(temp_ptr, temp);
-			temp_ptr.push_back(temp_indices.size());
-			MPI_Send(&temp_ptr[0], temp_ptr.size(), MPI_INT, i, i, MPI_COMM_WORLD);
-			MPI_Send(&temp_indices[0], temp_indices.size(), MPI_INT, i, i, MPI_COMM_WORLD);
-			MPI_Send(&temp_data[0], temp_data.size(), MPI_INT, i, i, MPI_COMM_WORLD);
-		}
-		//final process' load
-		temp_data = sub(data, next, data.size());
-		temp_indices = sub(indices, next, indices.size());
-		temp_ptr = sub(ptrs, next_index, ptrs.size());
-		mapped_subtract(temp_ptr, next);
-		temp_ptr.push_back(temp_indices.size());
-		MPI_Send(&temp_ptr[0], temp_ptr.size(), MPI_INT, comm_size - 1, comm_size - 1, MPI_COMM_WORLD);
-		// cout << "sending to last2 "<< temp_indices.size() << endl;
-		MPI_Send(&temp_indices[0], temp_indices.size(), MPI_INT, comm_size - 1, comm_size - 1, MPI_COMM_WORLD);
-		// cout << "sending to last3 "<< temp_data.size() << endl;
-		MPI_Send(&temp_data[0], temp_data.size(), MPI_INT, comm_size - 1, comm_size - 1, MPI_COMM_WORLD);
+    if (proc_Id != 0) {
+        own_mat_ptrs.resize(num_rows + 1);
+        MPI_Recv(&own_mat_ptrs[0], own_mat_ptrs.size(), MPI_INT, 0, proc_Id,
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        own_mat_data.resize(own_mat_ptrs.back());
+        own_mat_indices.resize(own_mat_ptrs.back());
+        MPI_Recv(&own_mat_indices[0], own_mat_indices.size(), MPI_INT, 0,
+                 proc_Id, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Recv(&own_mat_data[0], own_mat_data.size(), MPI_INT, 0, proc_Id,
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    } else {
+        int next_index = num_rows;
+        int next = ptrs[next_index];
+        int temp, old_index;
+        vector<int> temp_ptr, temp_indices;
+        vector<int> temp_data;
+        // own stuff
+        own_mat_indices = sub(indices, 0, next);
+        own_mat_data = sub(data, 0, next);
+        own_mat_ptrs = sub(ptrs, 0, num_rows);
+        own_mat_ptrs.push_back(own_mat_indices.size());
+        // send load to others
+        for (int i = 1; i < comm_size - 1; i++) {
+            old_index = next_index;
+            next_index += chunk;
+            temp = next;
+            next = ptrs[next_index];
+            temp_data = sub(data, temp, next);
+            temp_indices = sub(indices, temp, next);
+            temp_ptr = sub(ptrs, old_index, next_index);
+            mapped_subtract(temp_ptr, temp);
+            temp_ptr.push_back(temp_indices.size());
+            MPI_Send(&temp_ptr[0], temp_ptr.size(), MPI_INT, i, i,
+                     MPI_COMM_WORLD);
+            MPI_Send(&temp_indices[0], temp_indices.size(), MPI_INT, i, i,
+                     MPI_COMM_WORLD);
+            MPI_Send(&temp_data[0], temp_data.size(), MPI_INT, i, i,
+                     MPI_COMM_WORLD);
+        }
+        // final process' load
+        temp_data = sub(data, next, data.size());
+        temp_indices = sub(indices, next, indices.size());
+        temp_ptr = sub(ptrs, next_index, ptrs.size());
+        mapped_subtract(temp_ptr, next);
+        temp_ptr.push_back(temp_indices.size());
+        MPI_Send(&temp_ptr[0], temp_ptr.size(), MPI_INT, comm_size - 1,
+                 comm_size - 1, MPI_COMM_WORLD);
+        // cout << "sending to last2 "<< temp_indices.size() << endl;
+        MPI_Send(&temp_indices[0], temp_indices.size(), MPI_INT, comm_size - 1,
+                 comm_size - 1, MPI_COMM_WORLD);
+        // cout << "sending to last3 "<< temp_data.size() << endl;
+        MPI_Send(&temp_data[0], temp_data.size(), MPI_INT, comm_size - 1,
+                 comm_size - 1, MPI_COMM_WORLD);
     }
 }
 
-void getOutput()
-{
-    if (proc_Id == 0)
-    {
-		output = new long long int[dim];
-		memcpy(output, own_output, num_rows * sizeof(long long int));
-		int len, totallen = num_rows;
-		for (int i = 1; i < comm_size; i++)
-		{
-			MPI_Recv(&len, 1, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-			MPI_Recv(output + totallen, len, MPI_LONG_LONG_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-			totallen += len;
-		}
-    }
-    else
-    {
-		for (int i = 1; i < comm_size; i++)
-		{
-			MPI_Send(&num_rows, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
-			MPI_Send(own_output, num_rows, MPI_LONG_LONG_INT, 0, 0, MPI_COMM_WORLD);
-		}
+void getOutput() {
+    if (proc_Id == 0) {
+        output = new long long int[dim];
+        memcpy(output, own_output, num_rows * sizeof(long long int));
+        int len, totallen = num_rows;
+        for (int i = 1; i < comm_size; i++) {
+            MPI_Recv(&len, 1, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Recv(output + totallen, len, MPI_LONG_LONG_INT, i, 0,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            totallen += len;
+        }
+    } else {
+        for (int i = 1; i < comm_size; i++) {
+            MPI_Send(&num_rows, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
+            MPI_Send(own_output, num_rows, MPI_LONG_LONG_INT, 0, 0,
+                     MPI_COMM_WORLD);
+        }
     }
 }
 
-void wrapperForCuda()
-{
+void wrapperForCuda() {
     int dimension = dim;
-    //Get the number of rows being handled by the current process
+    // Get the number of rows being handled by the current process
     int numRows = num_rows;
 
-    //Each partition's rows[i], colsIndices[i] and values[i]
+    // Each partition's rows[i], colsIndices[i] and values[i]
     int *currPartitionFirstElemsRows;
     currPartitionFirstElemsRows = &own_mat_ptrs[0];
 
@@ -196,11 +189,11 @@ void wrapperForCuda()
     int *currPartitionNonZeroElems;
     currPartitionNonZeroElems = &own_mat_data[0];
 
-    //Commom vector for all processes
+    // Commom vector for all processes
     int *vecTOR;
     vecTOR = &vec[0];
 
-    //Device copies for computation
+    // Device copies for computation
     int *devCurrPartitionFirstElemsRows;
     int *devCurrPartitionColIndices;
     int *devCurrPartitionNonZeroElems;
@@ -211,10 +204,10 @@ void wrapperForCuda()
     int size2 = own_mat_indices.size() * sizeof(int);
     int size3 = own_mat_data.size() * sizeof(int);
 
-    //Current process's computed output
+    // Current process's computed output
     own_output = (long long int *)malloc(sizeof(long long int) * numRows);
 
-    //once
+    // once
     cudaMalloc((void **)&devFinalVec, numRows * sizeof(long long int));
     cudaMalloc((void **)&devVec, dimension * sizeof(int));
 
@@ -224,50 +217,46 @@ void wrapperForCuda()
     cudaMalloc((void **)&devCurrPartitionColIndices, size2);
     cudaMalloc((void **)&devCurrPartitionNonZeroElems, size3);
 
-    cudaMemcpy(devCurrPartitionFirstElemsRows, currPartitionFirstElemsRows, size1, cudaMemcpyHostToDevice);
-    cudaMemcpy(devCurrPartitionColIndices, currPartitionColIndices, size2, cudaMemcpyHostToDevice);
-    cudaMemcpy(devCurrPartitionNonZeroElems, currPartitionNonZeroElems, size3, cudaMemcpyHostToDevice);
+    cudaMemcpy(devCurrPartitionFirstElemsRows, currPartitionFirstElemsRows,
+               size1, cudaMemcpyHostToDevice);
+    cudaMemcpy(devCurrPartitionColIndices, currPartitionColIndices, size2,
+               cudaMemcpyHostToDevice);
+    cudaMemcpy(devCurrPartitionNonZeroElems, currPartitionNonZeroElems, size3,
+               cudaMemcpyHostToDevice);
     cudaMemcpy(devVec, vecTOR, dimension * sizeof(int), cudaMemcpyHostToDevice);
 
-    //Tuning for the problem size
+    // Tuning for the problem size
     int blocks;
     int thrds;
-    if (num_rows < THREADS_PER_BLOCK)
-    {
-	blocks = 1;
-	thrds = num_rows;
-    }
-    else
-    {
-	thrds = THREADS_PER_BLOCK;
-	blocks = (num_rows / thrds) + 1;
+    if (num_rows < THREADS_PER_BLOCK) {
+        blocks = 1;
+        thrds = num_rows;
+    } else {
+        thrds = THREADS_PER_BLOCK;
+        blocks = (num_rows / thrds) + 1;
     }
 
-    multKernel<<<blocks, thrds>>>(devCurrPartitionFirstElemsRows, devCurrPartitionColIndices, devCurrPartitionNonZeroElems, numRows, devVec, devFinalVec);
+    multKernel<<<blocks, thrds>>>(
+        devCurrPartitionFirstElemsRows, devCurrPartitionColIndices,
+        devCurrPartitionNonZeroElems, numRows, devVec, devFinalVec);
 
-    cudaMemcpy(own_output, devFinalVec, numRows * sizeof(long long int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(own_output, devFinalVec, numRows * sizeof(long long int),
+               cudaMemcpyDeviceToHost);
 }
 
-void computeForEachProcess()
-{
-    wrapperForCuda();
-}
+void computeForEachProcess() { wrapperForCuda(); }
 
-void fileWrite(char *name)
-{
-    if (proc_Id == 0)
-    {
-	ofstream f_out;
-	f_out.open(name);
-	for (int i = 0; i < dim; i++)
-	{
-	    f_out << output[i] << '\n';
-	}
-	f_out.close();
+void fileWrite(char *name) {
+    if (proc_Id == 0) {
+        ofstream f_out;
+        f_out.open(name);
+        for (int i = 0; i < dim; i++) {
+            f_out << output[i] << '\n';
+        }
+        f_out.close();
     }
 }
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &comm_size);
     MPI_Comm_rank(MPI_COMM_WORLD, &proc_Id);
@@ -275,11 +264,12 @@ int main(int argc, char *argv[])
     num_rows = 0;
     string in_file = argv[1];
     getInput(argv[1]);
-	//--- Till this point every process has a copy of the vector and a CSR representation of its slice of the matrix
+    //--- Till this point every process has a copy of the vector and a CSR
+    //representation of its slice of the matrix
     computeForEachProcess();
-    
-	//Gathering outputs from each process
-	getOutput();
+
+    // Gathering outputs from each process
+    getOutput();
 
     fileWrite(argv[2]);
     MPI_Finalize();
